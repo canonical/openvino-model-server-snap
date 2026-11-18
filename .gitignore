@@ -1,0 +1,10 @@
+*.snap
+*.tar.gz
+*.sha256
+dist/
+unpacked/
+t/
+parts/
+stage/
+prime/
+prebuilt/

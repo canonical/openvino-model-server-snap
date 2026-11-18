@@ -1,0 +1,44 @@
+name: ovms-consumer-tarball
+base: core24
+version: "0.1"
+summary: Example consumer of the openvino-model-server-2404 release tarball
+description: |
+  Unpacks the openvino-model-server-2404 release tarball (ovms/ and
+  gpu-runtime/) at build time. Delivery mechanism 3 in the
+  openvino-model-server-snap README.
+grade: devel
+confinement: strict
+
+platforms:
+  amd64:
+
+plugs:
+  npu-libs:
+    interface: content
+    content: npu-libs-2404
+    target: $SNAP/npu-libs
+
+parts:
+  openvino-model-server:
+    plugin: dump
+    source: https://github.com/canonical/openvino-model-server-snap/releases/download/2026.4.1/openvino-model-server-2404_2026.4.1_amd64.tar.gz
+    # source-checksum: sha256/<contents of the .sha256 release asset>
+    stage:
+      - ovms
+      # Remove this line to bring your own GPU runtime (see the README).
+      - gpu-runtime
+    # For an inference-snaps component:
+    # organize:
+    #   ovms: (component/openvino-model-server)/ovms
+    #   gpu-runtime: (component/openvino-model-server)/gpu-runtime
+
+apps:
+  ovms:
+    command: ovms/bin/ovms-env $SNAP/ovms/bin/ovms
+    plugs: [network-bind, opengl, accel, npu-libs]
+
+lint:
+  ignore:
+    - library:
+        - ovms/lib/**
+        - gpu-runtime/**

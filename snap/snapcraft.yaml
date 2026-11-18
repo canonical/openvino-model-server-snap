@@ -1,0 +1,339 @@
+name: openvino-model-server-2404
+base: core24
+title: OpenVINO Model Server
+summary: OpenVINO Model Server built against the openvino-toolkit-2404 runtime
+description: |
+  OpenVINO Model Server (OVMS) built from source, bundled with the OpenVINO
+  runtime (core, GenAI, tokenizers, CPU/GPU/NPU plugins) from the
+  openvino-toolkit-2404 snap.
+
+  Everything lives in a single relocatable tree under $SNAP/ovms (bin/ovms,
+  lib/, share/). Every binary finds its libraries via RUNPATH, so the tree
+  works unchanged when it is:
+
+    * staged into another snap at build time (stage-snaps),
+    * mounted into another snap at runtime (content interface
+      "openvino-model-server-2404"), or
+    * unpacked from the release tarball.
+
+  Intel GPU user-space drivers (OpenCL ICD, IGC, Level Zero GPU driver from
+  intel-compute-runtime-bundle) are bundled in a separate $SNAP/gpu-runtime
+  tree, exported through a second content slot so consumers can pick their
+  own. Intel NPU drivers come from the intel-npu-driver snap (npu-libs).
+adopt-info: ovms
+grade: stable
+confinement: strict
+license: Apache-2.0
+website: https://github.com/openvinotoolkit/model_server
+source-code: https://github.com/openvinotoolkit/model_server
+
+platforms:
+  amd64:
+
+# Consumers mount these at $SNAP/ovms and $SNAP/gpu-runtime. ovms/bin/ovms-env
+# looks for gpu-runtime and npu-libs next to the ovms directory.
+slots:
+  openvino-model-server:
+    interface: content
+    content: openvino-model-server-2404
+    read:
+      - $SNAP/ovms
+  intel-gpu-runtime:
+    interface: content
+    content: openvino-model-server-2404-gpu-runtime
+    read:
+      - $SNAP/gpu-runtime
+
+plugs:
+  npu-libs:
+    interface: content
+    content: npu-libs-2404
+    target: $SNAP/npu-libs
+
+# python3.10 is needed by the TensorFlow part of the OVMS Bazel build
+# (upstream Dockerfile.ubuntu installs it from the same PPA).
+package-repositories:
+  - type: apt
+    ppa: deadsnakes/ppa
+
+parts:
+  # Build-time view of openvino-toolkit-2404 in its original layout (headers,
+  # CMake configs, libraries). Nothing from this part is primed. The runtime
+  # files are copied into ovms/lib by the openvino-runtime part.
+  openvino-toolkit-dev:
+    plugin: nil
+    stage-snaps:
+      - openvino-toolkit-2404/2026/stable
+    stage:
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libopenvino*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/openvino-*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libhwloc*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libsnappy*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/libOpenCL*
+      - usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/cmake/openvino*
+      - usr/include/openvino
+      - usr/runtime/include
+      - usr/runtime/cmake
+      - usr/docs
+    prime:
+      - -usr
+
+  # OpenVINO runtime from openvino-toolkit-2404, flattened into ovms/lib. The
+  # plugin directory stays a sibling of libopenvino, where OpenVINO looks for it.
+  # TBB comes from the onetbb part instead of the toolkit.
+  openvino-runtime:
+    after: [openvino-toolkit-dev]
+    plugin: nil
+    build-packages:
+      - patchelf
+    override-build: |
+      src="$CRAFT_STAGE/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR"
+      lib="$CRAFT_PART_INSTALL/ovms/lib"
+      lic="$CRAFT_PART_INSTALL/ovms/thirdparty-licenses/openvino-toolkit-2404"
+      mkdir -p "$lib" "$lic"
+      cp -a "$src"/libopenvino* "$src"/openvino-* "$src"/libhwloc.so.* \
+            "$src"/libsnappy.so.* "$src"/libOpenCL.so.* "$lib/"
+      cp -a "$CRAFT_STAGE"/usr/docs/* "$lic/"
+      find "$lib" -maxdepth 1 -type f -name '*.so*' -exec patchelf --set-rpath '$ORIGIN' {} +
+      find "$lib"/openvino-* -type f -name '*.so' -exec patchelf --set-rpath '$ORIGIN/..' {} +
+
+  # oneTBB 2021.13.1 (the version upstream OpenVINO 2026.4.1 pins) built with
+  # the tpause idle backoff disabled. With GCC >= 11, oneTBB's prolonged_pause()
+  # uses _tpause(0, ...) on WAITPKG CPUs (Alder Lake and later), which made CPU
+  # inference about 5% slower than Intel's prebuilt oneTBB (built with GCC 10,
+  # no tpause). See https://github.com/canonical/openvino-toolkit-snap/issues/54.
+  onetbb:
+    after: [openvino-runtime]
+    plugin: cmake
+    source: https://github.com/uxlfoundation/oneTBB.git
+    source-tag: v2021.13.1
+    source-depth: 1
+    override-pull: |
+      craftctl default
+      f=src/tbb/scheduler_common.h
+      grep -q 'if (governor::wait_package_enabled()) {' "$f"
+      sed -i 's/if (governor::wait_package_enabled()) {/if (false \&\& governor::wait_package_enabled()) { \/\/ no tpause, see openvino-toolkit-snap#54/' "$f"
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/ovms
+      - -DCMAKE_INSTALL_LIBDIR=lib
+      - -DTBB_TEST=OFF
+      - -DTBB_EXAMPLES=OFF
+      - -DTBB_STRICT=OFF
+      - -DTBBMALLOC_BUILD=ON
+      # Builds tbbbind_2_5 (hybrid-core / NUMA binding) against hwloc 2.x.
+      - -DTBB_DISABLE_HWLOC_AUTOMATIC_SEARCH=OFF
+    build-packages:
+      - libhwloc-dev
+      - pkgconf
+      - patchelf
+    override-build: |
+      craftctl default
+      cd "$CRAFT_PART_INSTALL/ovms"
+      rm -rf include share lib/cmake lib/pkgconfig
+      find lib -name 'libtbb*.so' -type l -delete
+      find lib -name 'libtbb*.so.*' -type f -exec patchelf --set-rpath '$ORIGIN' {} +
+      mkdir -p thirdparty-licenses/onetbb
+      cp "$CRAFT_PART_SRC"/LICENSE* thirdparty-licenses/onetbb/
+
+  opencv:
+    plugin: cmake
+    source: https://github.com/opencv/opencv.git
+    source-tag: "4.14.0"
+    source-depth: 1
+    override-pull: |
+      craftctl default
+      [ -d opencv_contrib ] || git clone --depth 1 -b 4.14.0 \
+        https://github.com/opencv/opencv_contrib.git opencv_contrib
+    # Same configuration as model_server third_party/opencv/opencv_cmake_flags.txt
+    cmake-parameters:
+      - -DBUILD_LIST=core,improc,imgcodecs,calib3d,features2d,highgui,imgproc,video,videoio,optflow
+      - -DOPENCV_EXTRA_MODULES_PATH=$CRAFT_PART_SRC/opencv_contrib/modules
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DENABLE_LTO=OFF
+      - -DCMAKE_INSTALL_PREFIX=/opt/opencv
+      - -DOPENCV_LIB_INSTALL_PATH=lib
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_PERF_TESTS=OFF
+      - -DBUILD_opencv_ts=OFF
+      - -DBUILD_opencv_aruco=OFF
+      - -DBUILD_opencv_bgsegm=OFF
+      - -DBUILD_opencv_bioinspired=OFF
+      - -DBUILD_opencv_ccalib=OFF
+      - -DBUILD_opencv_datasets=OFF
+      - -DBUILD_opencv_dnn=OFF
+      - -DBUILD_opencv_dnn_objdetect=OFF
+      - -DBUILD_opencv_dpm=OFF
+      - -DBUILD_opencv_face=OFF
+      - -DBUILD_opencv_fuzzy=OFF
+      - -DBUILD_opencv_hfs=OFF
+      - -DBUILD_opencv_img_hash=OFF
+      - -DBUILD_opencv_js=OFF
+      - -DBUILD_opencv_line_descriptor=OFF
+      - -DBUILD_opencv_phase_unwrapping=OFF
+      - -DBUILD_opencv_plot=OFF
+      - -DBUILD_opencv_quality=OFF
+      - -DBUILD_opencv_reg=OFF
+      - -DBUILD_opencv_rgbd=OFF
+      - -DBUILD_opencv_saliency=OFF
+      - -DBUILD_opencv_shape=OFF
+      - -DBUILD_opencv_structured_light=OFF
+      - -DBUILD_opencv_surface_matching=OFF
+      - -DBUILD_opencv_world=OFF
+      - -DBUILD_opencv_xobjdetect=OFF
+      - -DBUILD_opencv_xphoto=OFF
+      - -DCV_ENABLE_INTRINSICS=ON
+      - -DWITH_EIGEN=ON
+      - -DWITH_PTHREADS=ON
+      - -DWITH_PTHREADS_PF=ON
+      - -DWITH_JPEG=ON
+      - -DWITH_PNG=ON
+      - -DWITH_TIFF=OFF
+      - -DWITH_OPENEXR=OFF
+    build-packages:
+      - build-essential
+      - cmake
+      - git
+    prime:
+      - -opt  # the ovms part copies the libraries into ovms/lib
+
+  azure-sdk:
+    plugin: nil
+    source: https://github.com/Azure/azure-sdk-for-cpp.git
+    source-tag: azure-storage-blobs_12.18.0
+    source-depth: 1
+    build-packages:
+      - cmake
+      - libcurl4-openssl-dev
+      - libssl-dev
+      - libxml2-dev
+    override-build: |
+      # Same as the "Azure SDK" section of model_server Dockerfile.ubuntu
+      prefix="$CRAFT_PART_INSTALL/opt/azure-sdk"
+      echo "# no-op: use system libcurl and openssl" > "$CRAFT_PART_BUILD/no-vcpkg.cmake"
+      for comp in core/azure-core storage/azure-storage-common \
+                  storage/azure-storage-blobs storage/azure-storage-files-shares; do
+        name="${comp#*/}"
+        extra=()
+        [ "$name" = azure-core ] && extra=(-DDISABLE_AZURE_CORE_OPENTELEMETRY=ON -DBUILD_TRANSPORT_CURL=ON)
+        cmake -S "sdk/$comp" -B "build/$name" \
+          -DCMAKE_TOOLCHAIN_FILE="$CRAFT_PART_BUILD/no-vcpkg.cmake" \
+          -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
+          -DCMAKE_PREFIX_PATH="$prefix" "${extra[@]}"
+        cmake --build "build/$name" --parallel "$CRAFT_PARALLEL_BUILD_COUNT"
+        cmake --install "build/$name" --prefix "$prefix"
+      done
+    prime:
+      - -opt  # the ovms part copies the libraries into ovms/lib
+
+  ovms:
+    after: [openvino-toolkit-dev, openvino-runtime, onetbb, opencv, azure-sdk]
+    plugin: nil
+    source: https://github.com/openvinotoolkit/model_server.git
+    source-tag: v2026.4.1
+    source-depth: 1
+    build-environment:
+      - PIP_BREAK_SYSTEM_PACKAGES: "1"
+    # From model_server Dockerfile.ubuntu (base_build and build stages)
+    build-packages:
+      - build-essential
+      - make
+      - cmake
+      - automake
+      - autoconf
+      - libtool
+      - curl
+      - ca-certificates
+      - git
+      - gpg
+      - patch
+      - patchelf
+      - pkg-config
+      - wget
+      - unzip
+      - bc
+      - default-jdk
+      - libcurl4-openssl-dev
+      - libssl-dev
+      - libuuid1
+      - uuid-dev
+      - libva-dev
+      - libxml2-dev
+      - zlib1g-dev
+      - libgflags-dev
+      - libnuma-dev
+      - libtbb-dev
+      - libpugixml1v5
+      - libxml2
+      - ocl-icd-opencl-dev
+      - opencl-clhpp-headers
+      - opencl-c-headers
+      - python3-pip
+      - python3.12-dev
+      - python3.10-dev
+      - python3.10-venv
+    # Runtime libraries that core24 lacks. They are moved into ovms/lib by
+    # package-ovms.sh so the tree stays self-contained.
+    stage-packages:
+      - libxml2
+      - libcurl4
+    override-pull: |
+      craftctl default
+      craftctl set version="$(git describe --tags --abbrev=0 | sed 's/^v//')"
+    override-build: |
+      export OVMS_VERSION="$(git -C "$CRAFT_PART_SRC" describe --tags --abbrev=0 | sed 's/^v//')"
+      python3.10 -m pip install "numpy<2.0.0" --no-cache-dir
+      python3.12 -m pip install "Jinja2==3.1.6" "MarkupSafe==3.0.2" "numpy<2.0.0" --no-cache-dir
+      "$CRAFT_PROJECT_DIR/scripts/build-ovms.sh"
+      "$CRAFT_PROJECT_DIR/scripts/package-ovms.sh"
+
+  # Own part so that edits to the wrapper are picked up without rebuilding OVMS.
+  ovms-env:
+    plugin: dump
+    source: scripts
+    source-type: local
+    stage: [ovms/bin/ovms-env]
+    organize:
+      ovms-env: ovms/bin/ovms-env
+    prime: [ovms/bin/ovms-env]
+    override-prime: |
+      craftctl default
+      chmod 0755 "$CRAFT_PRIME/ovms/bin/ovms-env"
+
+  # Intel GPU user-space runtime (OpenCL ICD + IGC + Level Zero GPU driver,
+  # current and legacy platforms), in its own relocatable tree. The ICD files
+  # are rewritten to bare library names so they resolve via LD_LIBRARY_PATH
+  # (set by ovms-env) wherever the tree is mounted. No layout is needed.
+  gpu-runtime:
+    source: https://github.com/canonical/intel-compute-runtime-bundle.git
+    source-tag: 26.22.38646.4
+    plugin: make
+    build-packages:
+      - wget
+    override-build: |
+      make
+      dest="$CRAFT_PART_INSTALL/gpu-runtime"
+      make install DESTDIR="$dest"
+      for icd in "$dest"/etc/OpenCL/vendors/*.icd; do
+        basename "$(cat "$icd")" > "$icd"
+      done
+      # Unused in the snap, and their alternatives links point outside it.
+      rm -rf "$dest"/usr/bin "$dest"/etc/alternatives "$dest"/var
+      git -C "$CRAFT_PART_SRC" describe --tags > "$dest/VERSION"
+
+apps:
+  ovms:
+    command: ovms/bin/ovms-env $SNAP/ovms/bin/ovms
+    plugs:
+      - network-bind
+      - opengl
+      - accel
+      - npu-libs
+
+lint:
+  ignore:
+    - library:
+        # The ovms tree is consumed by other snaps. Plugins, frontends and
+        # tbbbind are dlopen()ed, and the rest resolve via RUNPATH.
+        - ovms/lib/**
+        - gpu-runtime/**

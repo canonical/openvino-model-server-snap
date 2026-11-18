@@ -1,0 +1,9 @@
+#!/bin/bash
+# The content mount is only there once the plug is connected:
+#   sudo snap connect ovms-consumer-content:openvino-model-server openvino-model-server-2404:openvino-model-server
+if [ ! -x "$SNAP/ovms/bin/ovms" ]; then
+  echo "error: $SNAP/ovms is empty. Install openvino-model-server-2404 and connect" >&2
+  echo "  $SNAP_NAME:openvino-model-server to it." >&2
+  exit 1
+fi
+exec "$SNAP/ovms/bin/ovms-env" "$SNAP/ovms/bin/ovms" "$@"

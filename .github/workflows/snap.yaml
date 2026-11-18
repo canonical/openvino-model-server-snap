@@ -1,0 +1,86 @@
+name: Snap
+
+# Builds the snap and tests it on every pull request. On pushes to main, and
+# on manual dispatch, it also publishes to the Snap Store (<track>/edge), so
+# that it can be consumed via stage-snaps and the content interface.
+
+on:
+  pull_request:
+    paths:
+      - 'snap/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/snap.yaml'
+  push:
+    branches: [main]
+    paths:
+      - 'snap/**'
+      - 'scripts/**'
+      - '.github/workflows/snap.yaml'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to build (defaults to the selected ref)
+        required: false
+        type: string
+      track:
+        description: Snap Store track to publish to (e.g. latest, 2026)
+        required: false
+        default: latest
+        type: string
+      publish:
+        description: Publish to <track>/edge after the tests pass
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test and publish (amd64)
+    # The OVMS Bazel build needs many cores and ~60 GB of disk.
+    runs-on: self-hosted-linux-amd64-jammy-xlarge
+    # PRs from forks can't use the self-hosted runners or secrets.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.ref }}
+
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: build
+
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openvino-model-server-2404-${{ github.sha }}
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 30
+
+      - name: Check the tree is self-contained
+        run: |
+          sudo snap install core24
+          unsquashfs -q -d unpacked "${{ steps.build.outputs.snap }}" ovms
+          tests/check-tree.sh unpacked/ovms
+
+      - name: Install the snap
+        run: sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+
+      - name: Smoke test (confined, CPU)
+        run: tests/smoke-test.sh openvino-model-server-2404.ovms
+
+      # Publishing is disabled until the openvino-model-server-2404 name is
+      # registered in the Snap Store. To enable it, uncomment this step.
+      # - name: Publish to ${{ inputs.track || 'latest' }}/edge
+      #   if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+      #   env:
+      #     SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAP_STORE_PE_BOT }}
+      #     SNAP_FILE: ${{ steps.build.outputs.snap }}
+      #     RELEASE_TRACK: ${{ inputs.track || 'latest' }}
+      #   run: snapcraft upload "$SNAP_FILE" --release="${RELEASE_TRACK}/edge"

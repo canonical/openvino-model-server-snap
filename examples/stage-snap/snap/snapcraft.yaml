@@ -1,0 +1,48 @@
+name: ovms-consumer-stage-snap
+base: core24
+version: "0.1"
+summary: Example consumer of openvino-model-server-2404 via stage-snaps
+description: |
+  Copies the ovms/ and gpu-runtime/ trees out of the openvino-model-server-2404
+  snap at build time. Delivery mechanism 1 in the openvino-model-server-snap
+  README.
+grade: devel
+confinement: strict
+
+platforms:
+  amd64:
+
+plugs:
+  # Intel NPU driver libraries from the intel-npu-driver snap. ovms-env finds
+  # $SNAP/npu-libs next to $SNAP/ovms. Device access is the accel interface.
+  npu-libs:
+    interface: content
+    content: npu-libs-2404
+    target: $SNAP/npu-libs
+
+parts:
+  openvino-model-server:
+    plugin: nil
+    stage-snaps:
+      - openvino-model-server-2404/latest/edge
+    stage:
+      - ovms
+      # Remove this line to bring your own GPU runtime (see the README).
+      - gpu-runtime
+    # For an inference-snaps component, organize both trees into it:
+    # organize:
+    #   ovms: (component/openvino-model-server)/ovms
+    #   gpu-runtime: (component/openvino-model-server)/gpu-runtime
+
+apps:
+  ovms:
+    # ovms-env adds the GPU runtime and NPU libraries (if present) to the
+    # library path and runs ovms.
+    command: ovms/bin/ovms-env $SNAP/ovms/bin/ovms
+    plugs: [network-bind, opengl, accel, npu-libs]
+
+lint:
+  ignore:
+    - library:
+        - ovms/lib/**
+        - gpu-runtime/**

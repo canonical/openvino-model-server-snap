@@ -1,0 +1,32 @@
+#!/bin/sh
+# Command chain for ovms: sets the library and OpenCL ICD paths for the
+# optional Intel GPU runtime and Intel NPU driver libraries, then runs "$@".
+#
+#   ovms/bin/ovms-env ovms/bin/ovms --rest_port 8000 ...
+#
+# Library search order (LD_LIBRARY_PATH, highest priority first):
+#   1. ovms/lib      OVMS, OpenVINO and the tpause-free TBB. It must come
+#                    first: npu-libs ships its own libtbb.so.12 and libhwloc,
+#                    and LD_LIBRARY_PATH is searched before RUNPATH.
+#   2. GPU runtime   OVMS_GPU_RUNTIME, default <tree>/../gpu-runtime
+#   3. NPU libraries OVMS_NPU_LIBS,    default <tree>/../npu-libs
+# A missing or empty directory is skipped. CPU inference needs neither.
+# Set OVMS_GPU_RUNTIME/OVMS_NPU_LIBS to point at your own copies, or to an
+# empty string to disable them.
+set -e
+root="$(cd "$(dirname "$0")/.." && pwd)"
+triplet=x86_64-linux-gnu
+gpu="${OVMS_GPU_RUNTIME-$root/../gpu-runtime}"
+npu="${OVMS_NPU_LIBS-$root/../npu-libs}"
+
+path="$root/lib"
+if [ -n "$gpu" ] && [ -d "$gpu/usr/lib/$triplet" ]; then
+  # IGC (libigc, libigdfcl, opencl-clang) installs to usr/local/lib.
+  path="$path:$gpu/usr/lib/$triplet:$gpu/usr/lib/$triplet/intel-opencl:$gpu/usr/local/lib"
+  [ -d "$gpu/etc/OpenCL/vendors" ] && export OCL_ICD_VENDORS="$gpu/etc/OpenCL/vendors"
+fi
+if [ -n "$npu" ] && [ -e "$npu/libze_intel_npu.so.1" ]; then
+  path="$path:$npu"
+fi
+export LD_LIBRARY_PATH="$path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$@"
