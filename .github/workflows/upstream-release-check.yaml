@@ -1,0 +1,79 @@
+name: Upstream release check
+
+# Opens a single pull request when a new OpenVINO Model Server release, or a
+# new version of one of the snap's dependencies, should be built. Versions are
+# worked out by .github/scripts/upstream-versions.py:
+#
+# - ovms: newest stable openvinotoolkit/model_server tag, but only if the
+#   openvino-toolkit-2404 <major>/stable track already has the OpenVINO
+#   version that OVMS release pins. Otherwise OVMS stays where it is and a
+#   warning is logged, so the snap never builds OVMS against a different
+#   OpenVINO than upstream does.
+# - openvino-toolkit-2404 track, OpenCV, Azure SDK and oneTBB: the versions
+#   that OVMS release (and its OpenVINO) pin.
+# - gpu-runtime: newest canonical/intel-compute-runtime-bundle tag.
+#
+# All bumps go in one PR because they have to move together.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  upstream-release:
+    name: Open PR for matching upstream releases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Determine and apply the bumps
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 .github/scripts/upstream-versions.py snap/snapcraft.yaml
+          git --no-pager diff -- snap/snapcraft.yaml
+
+      - name: Open the pull request
+        if: steps.check.outputs.update == 'true'
+        # Uses the default GITHUB_TOKEN (via the permissions block above). Note:
+        # GitHub deliberately does NOT start new workflow runs for events raised
+        # by GITHUB_TOKEN, so this PR will not automatically trigger
+        # pull-request.yaml. Requires the repo setting
+        # "Allow GitHub Actions to create and approve pull requests".
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: automation/upstream-${{ steps.check.outputs.ovms_tag }}
+          base: main
+          delete-branch: true
+          # Attribute the commit to the GitHub Actions bot rather than the user
+          # who triggered the workflow (the default author is github.actor).
+          author: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          committer: "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+          title: "chore: update to openvinotoolkit/model_server ${{ steps.check.outputs.ovms_tag }}"
+          commit-message: |
+            chore: update to openvinotoolkit/model_server ${{ steps.check.outputs.ovms_tag }}
+
+            Bump OVMS and the dependencies it pins (OpenVINO
+            ${{ steps.check.outputs.openvino_version }} via openvino-toolkit-2404,
+            OpenCV, Azure SDK, oneTBB), and the Intel GPU runtime bundle.
+          body: |
+            Automated update triggered by new upstream releases.
+
+            ${{ steps.check.outputs.summary }}
+
+            > [!NOTE]
+            > This PR was opened by CI using `GITHUB_TOKEN`, so it does not
+            > automatically trigger the checks in `pull-request.yaml`. To run
+            > them, update the PR (e.g. push a commit) or close and re-open it.
+          labels: automation

@@ -250,6 +250,12 @@ The workflows follow those of
   `PE_BOT_LAB_DEVICES_READ_AND_WRITE` and `TEST_OBSERVER_API_KEY_PRODUCTION`
   secrets. See `checkbox/README.md` to run the test plan by hand.
 - `cla.yaml` checks that pull request authors have signed the Canonical CLA.
+- `upstream-release-check.yaml` (weekly, or manual) runs
+  `.github/scripts/upstream-versions.py` and opens one PR that bumps OVMS and
+  everything it pins: the `openvino-toolkit-2404` track, OpenCV, the Azure SDK
+  and oneTBB, plus the newest `intel-compute-runtime-bundle` tag. A new OVMS
+  release is only picked up once `openvino-toolkit-2404` `<major>/stable` has
+  the OpenVINO version it pins. Until then a warning is logged.
 
 Release flow: merge to `main` → snap is on `latest/edge`, a
 `<version>-rev<revision>` GitHub release is created with the tarball, and the
