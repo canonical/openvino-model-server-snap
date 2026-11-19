@@ -1,0 +1,198 @@
+name: Integration tests
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SNAP_NAME: openvino-model-server-2404
+
+jobs:
+  resolve-snap-info:
+    name: Resolve snap version and revision
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    outputs:
+      version: ${{ steps.snap-info.outputs.version }}
+      revision: ${{ steps.snap-info.outputs.revision }}
+    steps:
+      - name: Query latest/edge version and revision
+        id: snap-info
+        run: |
+          for attempt in {1..5}; do
+            edge_line=$(snap info ${SNAP_NAME} | grep latest/edge || true)
+            [ -n "$edge_line" ] && break
+            echo "snap info returned no latest/edge line (attempt $attempt), retrying..."
+            sleep 60
+          done
+          revision=$(echo "$edge_line" | cut -d "(" -f2 | cut -d ")" -f1)
+          version=$(echo "$edge_line" | awk '{print $2}')
+          # A "^" entry means latest/edge follows a higher-risk channel.
+          if [ "$version" = "^" ]; then
+            for risk in beta candidate stable; do
+              line=$(snap info ${SNAP_NAME} | grep "latest/$risk" || true)
+              v=$(echo "$line" | awk '{print $2}')
+              if [ -n "$v" ] && [ "$v" != "^" ]; then
+                version="$v"; revision=$(echo "$line" | cut -d "(" -f2 | cut -d ")" -f1); break
+              fi
+            done
+          fi
+          if [ -z "$revision" ] || [ -z "$version" ] || [ "$version" = "^" ]; then
+            echo "::error::Failed to parse revision/version from snap info latest/edge line: '$edge_line'"
+            exit 1
+          fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  testflinger-validation:
+    name: Testflinger Validation
+    needs: [resolve-snap-info]
+    runs-on: ubuntu-latest
+    # Only run if the release workflow completed successfully
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      matrix:
+        tag: ["intel-core-ultra-mtl", "intel-core-ultra-arl", "intel-core-ultra-lnl", "intel-core-ultra-ptl"]
+      fail-fast: false
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+      - name: Check out partner-eng-gh-actions
+        uses: actions/checkout@v7
+        with:
+          repository: canonical/partner-eng-gh-actions
+          ref: lab/various-improvements
+          token: ${{ secrets.PE_BOT_PAT }}
+          path: .github/actions/partner-eng-gh-actions
+      - name: Resolve device from lab history
+        id: device
+        uses: ./.github/actions/partner-eng-gh-actions/.github/actions/lab/device-from-repo-history
+        with:
+          github_token: ${{ secrets.PE_BOT_PAT }}
+          tags: '["${{ matrix.tag }}"]'
+          testflinger_client_id: ${{ secrets.TESTFLINGER_CLIENT_ID }}
+          testflinger_secret_key: ${{ secrets.TESTFLINGER_SECRET_KEY }}
+      - name: Fail if no recorded device matched
+        if: ${{ steps.device.outputs.matched != 'true' }}
+        run: |
+          echo "::error::No successful lab-history entry found for tag ${{ matrix.tag }}"
+          exit 1
+      - name: Build job file from template with oemscript provisioning
+        run: |
+          sed -e "s|REPLACE_QUEUE|${{ steps.device.outputs.queue }}|" \
+          -e "s|REPLACE_IMAGE_URL|$(jq -r '.image' <<< '${{ steps.device.outputs.details }}')|" \
+          -e "s|REPLACE_REVISION|${{ needs.resolve-snap-info.outputs.revision }}|" \
+          ${GITHUB_WORKSPACE}/.github/testflinger/job-def.yaml > \
+          ${GITHUB_WORKSPACE}/job.yaml
+      - name: Submit testflinger job
+        id: submit
+        continue-on-error: true
+        uses: canonical/testflinger/.github/actions/submit@submit/v1.5.1
+        with:
+          poll: true
+          job-path: ${{ github.workspace }}/job.yaml
+          client-id: ${{ secrets.TESTFLINGER_CLIENT_ID }}
+          secret-key: ${{ secrets.TESTFLINGER_SECRET_KEY }}
+      - name: Check provisioning status
+        id: provision-status
+        if: ${{ always() && steps.device.outputs.matched == 'true' }}
+        env:
+          TESTFLINGER_CLIENT_ID: ${{ secrets.TESTFLINGER_CLIENT_ID }}
+          TESTFLINGER_SECRET_KEY: ${{ secrets.TESTFLINGER_SECRET_KEY }}
+        run: |
+          job_id="${{ steps.submit.outputs.id }}"
+          status=""
+          if [ -n "$job_id" ]; then
+            status="$(testflinger results "$job_id" 2>/dev/null | jq -r '.provision_status // empty')"
+          fi
+          if [ "$status" = "0" ]; then
+            echo "provisioned=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$status" ]; then
+            echo "provisioned=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "provisioned=unknown" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Record device history
+        if: ${{ always() && steps.device.outputs.matched == 'true' }}
+        uses: ./.github/actions/partner-eng-gh-actions/.github/actions/lab/update-history
+        with:
+          device: ${{ steps.device.outputs.device }}
+          queue: ${{ steps.device.outputs.queue }}
+          device_context: ${{ steps.device.outputs.details }}
+          job_path: ${{ github.workspace }}/job.yaml
+          outcome: skipped
+          provision_outcome: ${{ steps.provision-status.outputs.provisioned == 'true' && 'passed' || steps.provision-status.outputs.provisioned == 'false' && 'failed' || 'unknown' }}
+          job_id: ${{ steps.submit.outputs.id }}
+          github_token: ${{ secrets.PE_BOT_LAB_DEVICES_READ_AND_WRITE }}
+          author: 'partner-eng-bot <pe-bot@canonical.com>'
+          committer: 'partner-eng-bot <pe-bot@canonical.com>'
+          auto_merge: true
+          merge_method: squash
+      - name: Download test artifacts
+        id: artifacts
+        env:
+          TESTFLINGER_CLIENT_ID: ${{ secrets.TESTFLINGER_CLIENT_ID }}
+          TESTFLINGER_SECRET_KEY: ${{ secrets.TESTFLINGER_SECRET_KEY }}
+        run: |
+          # Download the job artifacts with retry logic
+          for attempt in {1..10}; do
+            echo "Attempt $attempt: Downloading artifacts..."
+            if testflinger artifacts ${{ steps.submit.outputs.id }}; then
+              echo "Successfully downloaded artifacts"
+              break
+            else
+              if [ $attempt -eq 10 ]; then
+                echo "Failed to download artifacts after 10 attempts"
+                exit 1
+              fi
+              echo "Failed to download artifacts, retrying in 60 seconds..."
+              sleep 60
+            fi
+          done
+          tar -xzf artifacts.tgz
+          for f in artifacts/run-*.tar.gz; do
+            [ -f "$f" ] && tar -C artifacts -xzf "$f"
+          done
+          if ! ls artifacts/*/results.txt 1> /dev/null 2>&1; then
+            echo "Error: No results.txt files found in artifacts/"
+            ls -laR artifacts/
+            exit 1
+          fi
+      - name: Upload test artifacts
+        if: ${{ always() && steps.artifacts.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.tag }}-${{ steps.device.outputs.queue }}
+          path: artifacts/
+      - name: Check test results
+        run: |
+          # The test plan runs twice (see job-def.yaml): run-0 on the
+          # certified image, run-1 after an apt upgrade and reboot.
+          fail=0
+          for f in artifacts/*/results.txt; do
+            run=$(basename "$(dirname "$f")")
+            echo "### ${{ matrix.tag }} $run"
+            cat "$f"
+            if grep -q '^FAIL' "$f" || ! grep -q '^PASS' "$f"; then
+              fail=1
+            fi
+          done
+          {
+            echo "### ${{ matrix.tag }} (${{ steps.device.outputs.queue }}), ${SNAP_NAME} ${{ needs.resolve-snap-info.outputs.version }} rev ${{ needs.resolve-snap-info.outputs.revision }}"
+            for f in artifacts/*/results.txt; do
+              echo; echo "**$(basename "$(dirname "$f")")**"; echo '```'; cat "$f"; echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$fail"
