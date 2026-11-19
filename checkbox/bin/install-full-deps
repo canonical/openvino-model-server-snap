@@ -1,0 +1,21 @@
+#!/bin/bash
+
+optional_arg_A=$1
+optional_arg_B=$2
+if [ "${optional_arg_A}" = "--install_from_store" ] || [ "${optional_arg_B}" = "--install_from_store" ]; then
+  echo "Installing openvino-model-server-2404 from latest/stable in the Snap Store."
+  sudo snap install openvino-model-server-2404
+fi
+
+if ! snap list openvino-model-server-2404 2>&1 >/dev/null
+then
+  echo "Error: openvino-model-server-2404 snap is not installed!"
+  echo "Either install the openvino-model-server-2404 snap locally or from the store (using --install_from_store)"
+  exit 1
+fi
+
+sudo snap install intel-npu-driver
+
+if [ "${optional_arg_A}" = "--clean_model_dirs" ] || [ "${optional_arg_B}" = "--clean_model_dirs" ]; then
+  rm -rf "${SNAP_REAL_HOME}/snap/openvino-model-server-2404/common/models"
+fi

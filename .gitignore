@@ -8,3 +8,6 @@ parts/
 stage/
 prime/
 prebuilt/
+checkbox/checkbox-provider-openvino-model-server-2404/bin/check-tree.sh
+checkbox/checkbox-provider-openvino-model-server-2404/bin/smoke-test.sh
+*.snap

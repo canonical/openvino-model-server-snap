@@ -239,14 +239,16 @@ The workflows follow those of
   release assets are made from the published revision: the `.snap`, the
   tarball and its `.sha256`.
 - `integration-tests.yaml` runs after a successful release (or manually). It
-  submits a Testflinger job to Intel Core Ultra MTL, ARL, LNL and PTL machines.
-  Each job installs the `latest/edge` revision and `intel-npu-driver` from the
-  store, then runs `.github/testflinger/run-tests.sh`: `check-tree.sh` and the
-  confined smoke test on CPU, GPU and NPU. It does this twice, on the certified
-  image and again after `apt upgrade` and a reboot. The per-run `results.txt`
-  and logs are uploaded as workflow artifacts. Needs the `PE_BOT_PAT`,
-  `TESTFLINGER_CLIENT_ID`, `TESTFLINGER_SECRET_KEY` and
-  `PE_BOT_LAB_DEVICES_READ_AND_WRITE` secrets.
+  builds the Checkbox provider in `checkbox/` and submits a Testflinger job to
+  Intel Core Ultra MTL, ARL, LNL and PTL machines. Each job installs
+  `latest/edge` and `intel-npu-driver` from the store and runs the Checkbox
+  test plan: device permissions, `ovms --version`, `check-tree.sh`, and the
+  confined smoke test on CPU, GPU and NPU. It does this twice, on the
+  certified image and again after `apt upgrade` and a reboot, and uploads both
+  submissions to Test Observer. Needs the `PE_BOT_PAT`,
+  `TESTFLINGER_CLIENT_ID`, `TESTFLINGER_SECRET_KEY`,
+  `PE_BOT_LAB_DEVICES_READ_AND_WRITE` and `TEST_OBSERVER_API_KEY_PRODUCTION`
+  secrets. See `checkbox/README.md` to run the test plan by hand.
 - `cla.yaml` checks that pull request authors have signed the Canonical CLA.
 
 Release flow: merge to `main` → snap is on `latest/edge`, a

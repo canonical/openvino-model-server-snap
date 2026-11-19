@@ -4,14 +4,10 @@ provision_data:
   url: REPLACE_IMAGE_URL
 test_data:
   attachments:
+    - local: REPLACE_ATTACHMENT
+      agent: "checkbox-openvino-model-server-2404.snap"
     - local: ".github/testflinger/set-device-access.sh"
       agent: "set-device-access.sh"
-    - local: ".github/testflinger/run-tests.sh"
-      agent: "run-tests.sh"
-    - local: "tests/smoke-test.sh"
-      agent: "smoke-test.sh"
-    - local: "tests/check-tree.sh"
-      agent: "check-tree.sh"
   test_cmds: |
 
     set -x
@@ -50,40 +46,33 @@ test_data:
     # Avoid GPG errors on old unsupported versions of Chrome, which we don't test anyway
     _run sudo rm -f /etc/apt/sources.list.d/google-chrome.list
 
-    _run sudo apt-get update
-    _run sudo apt-get install -y curl binutils
-
-    # snapd must be new enough to have the accel interface
     _run sudo snap refresh
-    _run sudo snap install intel-npu-driver
-    _run sudo snap install openvino-model-server-2404 --revision REPLACE_REVISION
-    # Content plugs from a different publisher do not auto-connect.
-    _run sudo snap connect openvino-model-server-2404:npu-libs intel-npu-driver:npu-libs
-    _run snap connections openvino-model-server-2404
+    _run sudo snap install openvino-model-server-2404 --channel latest/edge
 
-    _run mkdir -p /home/ubuntu/tests /home/ubuntu/results
+    _run sudo snap install checkbox24
+    _put attachments/test/checkbox-openvino-model-server-2404.snap :/home/ubuntu/checkbox-openvino-model-server-2404.snap
+    _run sudo snap install --dangerous --classic /home/ubuntu/checkbox-openvino-model-server-2404.snap
+
     _put attachments/test/set-device-access.sh :/home/ubuntu/set-device-access.sh
-    _put attachments/test/run-tests.sh :/home/ubuntu/run-tests.sh
-    _put attachments/test/smoke-test.sh :/home/ubuntu/tests/smoke-test.sh
-    _put attachments/test/check-tree.sh :/home/ubuntu/tests/check-tree.sh
 
     # Run the validation twice:
     #
     # Run 1: original debs and kernel from the certified image
     # Run 2: upgraded debs and kernel, following a reboot
     #
-    mkdir -p artifacts
+    _run checkbox-openvino-model-server-2404.install-full-deps
+    _run snap connections openvino-model-server-2404
     _run sudo bash /home/ubuntu/set-device-access.sh
-    _run bash /home/ubuntu/run-tests.sh /home/ubuntu/results/run-0
-    _run tar -C /home/ubuntu/results -czf /home/ubuntu/results/run-0.tar.gz run-0
-    _get /home/ubuntu/results/run-0.tar.gz artifacts/
+    _run checkbox-openvino-model-server-2404.test-runner-automated
+    mkdir -p artifacts
+    _get '/home/ubuntu/.local/share/checkbox-ng/*.tar.xz' artifacts/
 
     _run sudo apt update
     _run sudo apt -y upgrade
     _run sudo reboot
     wait_for_ssh --allow-degraded
 
+    _run checkbox-openvino-model-server-2404.install-full-deps
     _run sudo bash /home/ubuntu/set-device-access.sh
-    _run bash /home/ubuntu/run-tests.sh /home/ubuntu/results/run-1
-    _run tar -C /home/ubuntu/results -czf /home/ubuntu/results/run-1.tar.gz run-1
-    _get /home/ubuntu/results/run-1.tar.gz artifacts/
+    _run checkbox-openvino-model-server-2404.test-runner-automated
+    _get '/home/ubuntu/.local/share/checkbox-ng/*.tar.xz' artifacts/

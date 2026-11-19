@@ -1,0 +1,3 @@
+unit: category
+id: openvino-model-server
+_name: OpenVINO Model Server snap validation
