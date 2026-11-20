@@ -167,16 +167,17 @@ The provider has two content slots, so `snap connect` needs the slot name.
 
 ### 3. Release tarball (build time)
 
-Each GitHub release has `openvino-model-server-2404_<version>_amd64.tar.gz`
-and a `.sha256` file attached. It contains the same `ovms/` and `gpu-runtime/`
-trees as the snap for that version, unpacked from the published snap. You can
-use it in a snap:
+Each GitHub release (tag `<version>-rev<revision>`, matching the store
+revision) has `openvino-model-server-2404_<version>_amd64.tar.gz`, its
+`.sha256` and the `.snap` attached. The tarball contains the same `ovms/` and
+`gpu-runtime/` trees as that snap revision, unpacked from the published snap.
+You can use it in a snap (pick the release tag you want):
 
 ```yaml
 parts:
   openvino-model-server:
     plugin: dump
-    source: https://github.com/canonical/openvino-model-server-snap/releases/download/2026.4.1/openvino-model-server-2404_2026.4.1_amd64.tar.gz
+    source: https://github.com/canonical/openvino-model-server-snap/releases/download/2026.4.1-rev1/openvino-model-server-2404_2026.4.1_amd64.tar.gz
     source-checksum: sha256/<from the .sha256 asset>
     stage:
       - ovms
@@ -224,19 +225,43 @@ would come from the host, therefore makes it fail.
 
 ## CI
 
-- `.github/workflows/snap.yaml` runs on pull requests and on pushes to `main`.
-  It builds the snap, runs `check-tree.sh`, installs the snap and runs the
-  confined smoke test. Publishing to `<track>/edge` (on `main` or a manual
-  dispatch) is commented out until the snap name is registered. When enabled,
-  it needs the `SNAP_STORE_PE_BOT` secret. The build needs the self-hosted
-  xlarge runners.
-- `.github/workflows/release-tarball.yaml` runs when a GitHub release is
-  published with an OVMS version tag (for example `2026.4.1`). It downloads
-  that snap version from the store, checks the tree, runs `make-tarball.sh`,
-  smoke-tests the tarball, and attaches it to the release.
+The workflows follow those of
+[openvino-ai-plugins-gimp-snap](https://github.com/canonical/openvino-ai-plugins-gimp-snap).
 
-Release flow: merge to `main` → snap is on `latest/edge` → test it → publish
-GitHub release `2026.4.1` → tarball is attached → promote the snap in the store.
+- `pull-request.yaml` (pull requests from branches in this repository) builds
+  the snap, runs the store review tools and `check-tree.sh`, installs the snap
+  and runs the confined CPU smoke test, then builds the release tarball from
+  the snap. The tarball is not smoke-tested there, because the runner is
+  Ubuntu 22.04 and the tarball needs a 24.04 userspace. `release.yaml`
+  smoke-tests it on an `ubuntu-24.04` runner. The build needs the self-hosted xlarge
+  runners.
+- `release.yaml` (pushes to `main`, or manual) builds the snap and uploads it
+  to `latest/edge` (`SNAP_STORE_PE_BOT` secret). It then tags the commit
+  `<version>-rev<revision>` and creates a GitHub release with that tag. The
+  release assets are made from the published revision: the `.snap`, the
+  tarball and its `.sha256`.
+- `integration-tests.yaml` runs after a successful release (or manually). It
+  builds the Checkbox provider in `checkbox/` and submits a Testflinger job to
+  Intel Core Ultra MTL, ARL, LNL and PTL machines. Each job installs
+  `latest/edge` and `intel-npu-driver` from the store and runs the Checkbox
+  test plan: device permissions, `ovms --version`, `check-tree.sh`, and the
+  confined smoke test on CPU, GPU and NPU. It does this twice, on the
+  certified image and again after `apt upgrade` and a reboot, and uploads both
+  submissions to Test Observer. Needs the `PE_BOT_PAT`,
+  `TESTFLINGER_CLIENT_ID`, `TESTFLINGER_SECRET_KEY`,
+  `PE_BOT_LAB_DEVICES_READ_AND_WRITE` and `TEST_OBSERVER_API_KEY_PRODUCTION`
+  secrets. See `checkbox/README.md` to run the test plan by hand.
+- `cla.yaml` checks that pull request authors have signed the Canonical CLA.
+- `upstream-release-check.yaml` (weekly, or manual) runs
+  `.github/scripts/upstream-versions.py` and opens one PR that bumps OVMS and
+  everything it pins: the `openvino-toolkit-2404` track, OpenCV, the Azure SDK
+  and oneTBB, plus the newest `intel-compute-runtime-bundle` tag. A new OVMS
+  release is only picked up once `openvino-toolkit-2404` `<major>/stable` has
+  the OpenVINO version it pins. Until then a warning is logged.
+
+Release flow: merge to `main` → snap is on `latest/edge`, a
+`<version>-rev<revision>` GitHub release is created with the tarball, and the
+integration tests run → promote the revision in the store.
 
 ## License
 

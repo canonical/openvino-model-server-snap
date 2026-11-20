@@ -1,0 +1,112 @@
+id: host/NpuDevicePermissions
+category_id: openvino-model-server
+flags: simple
+_summary: Check that user has read and write access to NPU char device node(s)
+estimated_duration: 2s
+requires:
+  host_npu.state == 'present'
+command:
+  for node in $(ls /dev/accel/accel*); do
+    echo "[INFO] Checking node ${node}"
+    if ! test -r ${node} ; then
+      >&2 echo "Test failure: user must have read permissions to ${node}"
+      >&2 echo "Please run 'sudo usermod -a -G render $USER' then log out and back in"
+      >&2 echo "Then run 'sudo chown root:render ${node} && sudo chmod g+rw ${node}'"
+      exit 1
+    fi
+    if ! test -w ${node} ; then
+      >&2 echo "Test failure: user must have write permissions to ${node}"
+      >&2 echo "Please run 'sudo usermod -a -G render $USER' then log out and back in"
+      >&2 echo "Then run 'sudo chown root:render ${node} && sudo chmod g+rw ${node}'"
+      exit 1
+    fi
+  done
+  echo "Test success: user has read and write access to NPU device node(s) $(ls /dev/accel/accel*)"
+
+id: host/GpuDevicePermissions
+category_id: openvino-model-server
+flags: simple
+_summary: Check that user has read and write access to GPU char device node(s)
+estimated_duration: 2s
+requires:
+  host_gpu.state == 'present'
+command:
+  for node in $(ls /dev/dri/render*); do
+    echo "[INFO] Checking node ${node}"
+    if ! test -r ${node} ; then
+      >&2 echo "Test failure: user must have read permissions to ${node}"
+      >&2 echo "Please run 'sudo usermod -a -G render $USER' then log out and back in"
+      >&2 echo "Then run 'sudo chown root:render ${node} && sudo chmod g+rw ${node}'"
+      exit 1
+    fi
+    if ! test -w ${node} ; then
+      >&2 echo "Test failure: user must have write permissions to ${node}"
+      >&2 echo "Please run 'sudo usermod -a -G render $USER' then log out and back in"
+      >&2 echo "Then run 'sudo chown root:render ${node} && sudo chmod g+rw ${node}'"
+      exit 1
+    fi
+  done
+  echo "Test success: user has read and write access to GPU device node(s) $(ls /dev/dri/render*)"
+
+id: ovms/version
+category_id: openvino-model-server
+flags: simple
+_summary: Check that the ovms app of the snap runs
+estimated_duration: 5s
+requires:
+  snap.name == 'openvino-model-server-2404'
+command:
+  openvino-model-server-2404.ovms --version
+
+id: ovms/check_tree
+category_id: openvino-model-server
+flags: simple
+_summary: Check that the snap's ovms tree is self-contained
+estimated_duration: 30s
+requires:
+  snap.name == 'openvino-model-server-2404'
+  executable.name == 'objdump'
+command:
+  check-tree.sh /snap/openvino-model-server-2404/current/ovms
+
+id: ovms/smoke_cpu
+category_id: openvino-model-server
+flags: simple
+_summary: Serve an LLM with the confined snap on CPU and get a chat completion
+estimated_duration: 5m
+requires:
+  snap.name == 'openvino-model-server-2404'
+depends:
+  ovms/version
+command:
+  MODEL_DIR=${SNAP_REAL_HOME}/snap/openvino-model-server-2404/common/models/smollm2-360m-int8-ov \
+    DEVICE=CPU smoke-test.sh openvino-model-server-2404.ovms
+
+id: ovms/smoke_gpu
+category_id: openvino-model-server
+flags: simple
+_summary: Serve an LLM with the confined snap on GPU and get a chat completion
+estimated_duration: 5m
+requires:
+  snap.name == 'openvino-model-server-2404'
+  host_gpu.state == 'present'
+depends:
+  ovms/version
+command:
+  MODEL_DIR=${SNAP_REAL_HOME}/snap/openvino-model-server-2404/common/models/smollm2-360m-int8-ov \
+    DEVICE=GPU smoke-test.sh openvino-model-server-2404.ovms
+
+id: ovms/smoke_npu
+category_id: openvino-model-server
+flags: simple
+_summary: Serve an LLM with the confined snap on NPU and get a chat completion
+estimated_duration: 5m
+requires:
+  snap.name == 'openvino-model-server-2404'
+  host_npu.state == 'present'
+  snap.name == 'intel-npu-driver'
+depends:
+  ovms/version
+command:
+  MODEL_DIR=${SNAP_REAL_HOME}/snap/openvino-model-server-2404/common/models/smollm2-360m-int8-ov \
+    DEVICE=NPU smoke-test.sh openvino-model-server-2404.ovms

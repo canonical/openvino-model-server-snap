@@ -1,0 +1,66 @@
+name: Pull Request
+
+on:
+  pull_request:
+    paths:
+      - 'snap/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/pull-request.yaml'
+    branches: ["**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build snap and run smoke tests
+    # The OVMS Bazel build needs many cores and ~60 GB of disk.
+    runs-on: self-hosted-linux-amd64-jammy-xlarge
+    # Only run on PRs from branches in the same repository (not forks)
+    # This ensures only trusted sources can trigger this workflow
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    timeout-minutes: 240
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v7
+      - name: Find and parse snapcraft.yaml
+        id: snapcraft-yaml
+        uses: snapcrafters/ci/parse-snapcraft-yaml@main
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: ${{ steps.snapcraft-yaml.outputs.project-root }}
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openvino-model-server-2404-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 30
+      - name: Review the built snap
+        uses: diddlesnaps/snapcraft-review-action@v1
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          isClassic: ${{ steps.snapcraft-yaml.outputs.classic }}
+          plugs: ${{ steps.snapcraft-yaml.outputs.plugs-file }}
+          slots: ${{ steps.snapcraft-yaml.outputs.slots-file }}
+      - name: Check the tree is self-contained
+        shell: bash
+        run: |
+          sudo snap install core24
+          unsquashfs -q -d unpacked "${{ steps.build.outputs.snap }}" ovms
+          tests/check-tree.sh unpacked/ovms
+      - name: Install the snap
+        shell: bash
+        run: |
+          sudo snap install --dangerous "${{ steps.build.outputs.snap }}"
+      - name: Smoke test the snap (confined, CPU)
+        shell: bash
+        run: |
+          tests/smoke-test.sh openvino-model-server-2404.ovms
+      - name: Make the release tarball
+        shell: bash
+        run: |
+          scripts/make-tarball.sh "${{ steps.build.outputs.snap }}" dist
