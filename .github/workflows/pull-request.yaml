@@ -64,8 +64,3 @@ jobs:
         shell: bash
         run: |
           scripts/make-tarball.sh "${{ steps.build.outputs.snap }}" dist
-      - name: Smoke test the tarball (CPU)
-        shell: bash
-        run: |
-          mkdir -p t && tar -C t -xzf dist/*.tar.gz
-          tests/smoke-test.sh ./t/ovms/bin/ovms-env ./t/ovms/bin/ovms

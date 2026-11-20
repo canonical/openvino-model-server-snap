@@ -231,7 +231,9 @@ The workflows follow those of
 - `pull-request.yaml` (pull requests from branches in this repository) builds
   the snap, runs the store review tools and `check-tree.sh`, installs the snap
   and runs the confined CPU smoke test, then builds the release tarball from
-  the snap and smoke-tests it too. The build needs the self-hosted xlarge
+  the snap. The tarball is not smoke-tested there, because the runner is
+  Ubuntu 22.04 and the tarball needs a 24.04 userspace. `release.yaml`
+  smoke-tests it on an `ubuntu-24.04` runner. The build needs the self-hosted xlarge
   runners.
 - `release.yaml` (pushes to `main`, or manual) builds the snap and uploads it
   to `latest/edge` (`SNAP_STORE_PE_BOT` secret). It then tags the commit
