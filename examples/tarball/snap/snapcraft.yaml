@@ -21,7 +21,7 @@ plugs:
 parts:
   openvino-model-server:
     plugin: dump
-    source: https://github.com/canonical/openvino-model-server-snap/releases/download/2026.4.1/openvino-model-server-2404_2026.4.1_amd64.tar.gz
+    source: https://github.com/canonical/openvino-model-server-snap/releases/download/2026.4.1-rev1/openvino-model-server-2404_2026.4.1_amd64.tar.gz
     # source-checksum: sha256/<contents of the .sha256 release asset>
     stage:
       - ovms

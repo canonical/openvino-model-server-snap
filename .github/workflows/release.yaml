@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    paths:
+      - 'snap/**'
+      - 'scripts/**'
+      - '.github/workflows/release.yaml'
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SNAP_NAME: openvino-model-server-2404
+
+jobs:
+  release:
+    name: Release to latest/edge
+    runs-on: self-hosted-linux-amd64-jammy-xlarge
+    timeout-minutes: 240
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v7
+      - name: Find and parse snapcraft.yaml
+        id: snapcraft-yaml
+        uses: snapcrafters/ci/parse-snapcraft-yaml@main
+      - name: Build snap
+        uses: snapcore/action-build@v1
+        id: build
+        with:
+          path: ${{ steps.snapcraft-yaml.outputs.project-root }}
+      - name: Review the built snap
+        uses: diddlesnaps/snapcraft-review-action@v1
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          isClassic: ${{ steps.snapcraft-yaml.outputs.classic }}
+          plugs: ${{ steps.snapcraft-yaml.outputs.plugs-file }}
+          slots: ${{ steps.snapcraft-yaml.outputs.slots-file }}
+      - name: Upload snap artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.SNAP_NAME }}
+          path: ${{ steps.build.outputs.snap }}
+          retention-days: 30
+      - name: Release to latest/edge
+        id: publish
+        shell: bash
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAP_STORE_PE_BOT }}
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+        run: |
+          snapcraft upload "$SNAP_FILE" --release=latest/edge
+  tag:
+    name: Push tag for revision
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      version: ${{ steps.tag.outputs.version }}
+      created: ${{ steps.tag.outputs.created }}
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v7
+      - name: Create and push tag for revision
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          revision=$(snap info ${SNAP_NAME} | grep latest/edge | cut -d "(" -f2 | cut -d ")" -f1)
+          version=$(snap info ${SNAP_NAME} | grep latest/edge | awk '{print $2}')
+          tag_name="${version}-rev${revision}"
+          echo "tag_name=${tag_name}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --tags origin | grep -q "refs/tags/${tag_name}"; then
+            echo "Tag ${tag_name} already exists in remote repo. Doing nothing."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            git tag -a "${tag_name}" -m "Revision ${revision}"
+            git push origin "${tag_name}"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+  github-release:
+    name: Create GitHub release
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # The release assets are made from the exact snap revision that was
+      # published, so the tarball has the same bits as the store snap.
+      - name: Download the published snap
+        id: download
+        shell: bash
+        env:
+          TAG_NAME: ${{ needs.tag.outputs.tag_name }}
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          revision="${TAG_NAME##*-rev}"
+          sudo apt-get -qq update && sudo apt-get -qq install -y squashfs-tools
+          snap download ${SNAP_NAME} --revision="${revision}" --basename=snap
+          mkdir -p dist
+          cp snap.snap "dist/${SNAP_NAME}_${VERSION}_amd64.snap"
+      - name: Check the tree is self-contained
+        shell: bash
+        run: |
+          sudo snap install core24
+          unsquashfs -q -d unpacked snap.snap ovms
+          tests/check-tree.sh unpacked/ovms
+      - name: Make the release tarball
+        shell: bash
+        run: |
+          scripts/make-tarball.sh snap.snap dist "${{ needs.tag.outputs.version }}"
+      - name: Smoke test the tarball (CPU)
+        shell: bash
+        run: |
+          mkdir -p t && tar -C t -xzf dist/*.tar.gz
+          tests/smoke-test.sh ./t/ovms/bin/ovms-env ./t/ovms/bin/ovms
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.tag.outputs.tag_name }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          UPSTREAM_REPO: openvinotoolkit/model_server
+        run: |
+          # Find existing releases named "${VERSION}-<n>" to determine the counter.
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq "[.[] | select(.name | startswith(\"${VERSION}-\"))]")
+          n=$(echo "$existing" | jq 'length')
+
+          release_name="${VERSION}-${n}"
+
+          if [ "$n" -eq 0 ]; then
+            body="New upstream release. See https://github.com/${UPSTREAM_REPO}/releases for details."
+          else
+            prev_tag=$(echo "$existing" | jq -r 'sort_by(.created_at) | last | .tag_name')
+            body="Changes since the previous release: https://github.com/${GITHUB_REPOSITORY}/compare/${prev_tag}...${TAG_NAME}"
+          fi
+
+          gh release create "${TAG_NAME}" \
+            --title "${release_name}" \
+            --notes "${body}" \
+            dist/*.tar.gz dist/*.sha256 dist/*.snap

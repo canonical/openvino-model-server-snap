@@ -1,0 +1,11 @@
+id: openvino-model-server-2404
+unit: test plan
+_name: OpenVINO Model Server snap tests
+include:
+    host/.*
+    ovms/.*
+bootstrap_include:
+    com.canonical.certification::executable
+    com.canonical.certification::snap
+    com.canonical.certification::host_npu
+    com.canonical.certification::host_gpu

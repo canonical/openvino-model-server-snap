@@ -1,0 +1,81 @@
+name: checkbox-openvino-model-server-2404
+summary: Checkbox tests for the openvino-model-server-2404 snap
+description: |
+  Collection of tests for the openvino-model-server-2404 snap: checks that the ovms tree is
+  self-contained, and serves a small LLM with the confined snap on CPU, GPU
+  and NPU.
+version: '1.0.0'
+confinement: classic
+grade: stable
+
+base: core24
+
+# Here are the available applications of the checkbox provider for the openvino-model-server-2404 snap
+# To run : snap run checkbox-openvino-model-server-2404.<app>
+#
+# checkbox-cli:
+#   - checkbox client, can be used to talk to the checkbox daemon
+# remote-slave:
+#   - checkbox slave daemon that will the responsible for running the test sesssion
+#     in the remote fashion (through checkbox-cli)
+# shell:
+#   - give shell access to the provider snap
+# test-runner / test-runner-automated:
+#   - execute all provider tests inside the snap environment
+#     the test execution is standalone and does not depend on the remote-slave daemon
+# install-full-deps:
+#   - install all depedencies needed for provider jobs
+apps:
+  checkbox-cli:
+    command-chain: [bin/wrapper_local]
+    command: bin/checkbox-cli-wrapper
+  remote-slave:
+    command-chain: [bin/wrapper_local]
+    command: bin/checkbox-cli-wrapper slave
+    daemon: simple
+    restart-condition: always
+  shell:
+    command-chain: [bin/wrapper_local]
+    command: bin/shell-wrapper
+  test-runner:
+    command-chain: [bin/wrapper_local]
+    command: bin/test-runner
+  test-runner-automated:
+    command-chain: [bin/wrapper_local]
+    command: bin/test-runner-automated
+  install-full-deps:
+    command: bin/install-full-deps
+
+parts:
+  checkbox-provider-openvino-model-server-2404:
+    plugin: dump
+    source: ./checkbox-provider-openvino-model-server-2404
+    source-type: local
+    build-snaps:
+      - checkbox-provider-tools
+      - checkbox24
+    build-attributes:
+      - enable-patchelf
+      # See: https://snapcraft.io/docs/linters-classic
+      # This patches the python interpreter to allow use of the dynamic linker from core24
+    stage-packages:
+      - binutils  # objdump, for check-tree.sh
+      - curl
+      - python3-minimal
+      - python3.12-minimal
+      # This provides a python interpreter for checkbox to use that works properly with classic confinement
+    override-build: |
+      # The provider jobs run the repository's tests/check-tree.sh and
+      # tests/smoke-test.sh. Copy them into the provider's bin/ before
+      # building (see the README); the build fails if they are missing.
+      test -x bin/check-tree.sh && test -x bin/smoke-test.sh
+      for path in $(find "/snap/checkbox24/current/providers/" -mindepth 1 -maxdepth 1 -type d); do export PROVIDERPATH=$path${PROVIDERPATH:+:$PROVIDERPATH}; done
+      checkbox-provider-tools validate
+      checkbox-provider-tools build
+      checkbox-provider-tools install --layout=relocatable --prefix=/providers/checkbox-provider-openvino-model-server-2404 --root="$SNAPCRAFT_PART_INSTALL"
+
+  bin:
+    plugin: dump
+    source: bin
+    organize:
+      '*': bin/
