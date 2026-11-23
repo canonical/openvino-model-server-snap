@@ -102,7 +102,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: canonical/partner-eng-gh-actions
-          ref: lab/various-improvements
+          ref: main
           token: ${{ secrets.PE_BOT_PAT }}
           path: .github/actions/partner-eng-gh-actions
       - name: Resolve device from lab history
@@ -164,6 +164,7 @@ jobs:
           queue: ${{ steps.device.outputs.queue }}
           device_context: ${{ steps.device.outputs.details }}
           job_path: ${{ github.workspace }}/job.yaml
+          update_index: false
           outcome: skipped
           provision_outcome: ${{ steps.provision-status.outputs.provisioned == 'true' && 'passed' || steps.provision-status.outputs.provisioned == 'false' && 'failed' || 'unknown' }}
           job_id: ${{ steps.submit.outputs.id }}
